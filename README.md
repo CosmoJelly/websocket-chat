@@ -70,7 +70,7 @@ REDIS_URL=redis://localhost:6379
 
 ```bash
 # Arch Linux
-sudo pacman -S postgresql redis (this could vary for your OS so just check)
+sudo pacman -S postgresql redis #(this could vary for your OS so use appropriately)
 sudo -u postgres initdb --locale=en_US.UTF-8 -D /var/lib/postgres/data
 sudo systemctl enable --now postgresql
 sudo systemctl enable --now redis
