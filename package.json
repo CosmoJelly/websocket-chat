@@ -1,0 +1,19 @@
+{
+  "name": "ws-chat",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev":   "node --watch server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "pg": "^8.20.0",
+    "redis": "^5.12.1",
+    "uuid": "^14.0.0",
+    "ws": "^8.20.0"
+  }
+}
