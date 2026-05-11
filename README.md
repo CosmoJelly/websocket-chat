@@ -1,231 +1,170 @@
 # ws-chat
+### A WebSocket chat server that actually works
 
-A production-grade WebSocket chat server with real-time presence, typing indicators, and persisted message history. Zero framework shortcuts — pure Node.js, Redis, and PostgreSQL.
+I wanted to build a real chat server - not the tutorial kind with Socket.io doing all the heavy lifting. So I did it properly. Raw WebSockets, Redis pub/sub, Postgres for history, presence tracking, typing indicators. The whole thing.
 
----
-
-## Stack
-
-| Layer | Tech | Role |
-|---|---|---|
-| Transport | Node.js `http` + `ws` | Raw HTTP server, WebSocket upgrade |
-| Realtime fan-out | Redis Pub/Sub | Broadcast across multiple server nodes |
-| Presence & typing | Redis hashes + sorted sets + SETEX | Per-user TTLs, auto-expiry |
-| Persistence | PostgreSQL | Message history, user records |
+Built with Node.js, Redis, PostgreSQL, and a stubborn refusal to use a framework.
 
 ---
 
-## Quick Start
+## What it does
 
-### 1. Start infrastructure
+- **Real-time messaging** - raw WebSocket connections, no polling, no fallbacks
+- **User presence** - see who's online, updates instantly when people join or leave
+- **Typing indicators** - auto-expire after 4 seconds so they never get stuck
+- **Message history** - last 50 messages loaded on join, persisted in Postgres forever
+- **Multi-room support** - join any room by name, rooms are created on the fly
+- **Scales horizontally** - Redis pub/sub means multiple server nodes work out of the box
+- **Invite anyone** - throw it behind ngrok and share the URL
+
+---
+
+## Tech Stack
+
+| | |
+|---|---|
+| Runtime | Node.js (pure `http` + `ws`) |
+| Realtime fan-out | Redis Pub/Sub |
+| Presence & typing | Redis hashes + sorted sets |
+| Persistence | PostgreSQL |
+| Client | Vanilla JS, single HTML file |
+
+---
+
+## Getting it running
+
+### Prerequisites
+
+- Node.js 18+
+- PostgreSQL
+- Redis
+- ngrok account (if you want to test it with the help of some friends)
+
+### 1. Clone and install
 
 ```bash
-docker compose up -d
+git clone https://github.com/CosmoJelly/websocket-chat.git
+cd websocket-chat
+npm install
 ```
 
-Starts PostgreSQL on `5432` and Redis on `6379`. Schema is bootstrapped automatically on first server start.
-
-### 2. Configure environment
+### 2. Environment variables
 
 ```bash
 cp .env.example .env
-# edit .env if your ports/passwords differ
 ```
 
-### 3. Start the server
+```env
+PORT=3001
+
+PG_HOST=localhost
+PG_PORT=5432
+PG_DB=wschat
+PG_USER=postgres
+PG_PASSWORD=postgres
+
+REDIS_URL=redis://localhost:6379
+```
+
+### 3. Set up the database
 
 ```bash
-# production
+# Arch Linux
+sudo pacman -S postgresql redis (this could vary for your OS so just check)
+sudo -u postgres initdb --locale=en_US.UTF-8 -D /var/lib/postgres/data
+sudo systemctl enable --now postgresql
+sudo systemctl enable --now redis
+sudo -u postgres createdb wschat
+```
+
+### 4. Run it
+
+```bash
 npm start
-
-# development (auto-restart on file changes, Node 18+)
-npm run dev
 ```
 
-Server listens on `http://localhost:3001`.
-
-### 4. Open the test client
-
-Open `index.html` directly in your browser (no build step needed). Enter a username and connect. Open multiple tabs to test presence and messaging.
-
----
-
-## Architecture
-
-```
-Browser A                    Server Node 1              Browser B
-   │                              │                         │
-   │──── WS /ws ─────────────────►│                         │
-   │  { type:'join', username }   │                         │
-   │                              │── upsertUser() ──► PG   │
-   │                              │── setPresent() ──► Redis │
-   │                              │── subscribe('chat:general') ◄─ Redis
-   │◄── { type:'welcome',         │                         │
-   │      history, presence }     │                         │
-   │                              │                         │──── WS /ws ──►│
-   │                              │                         │  { type:'join' }
-   │                              │◄────────────────────────│
-   │                              │── publish('chat:general', presence:online)
-   │◄── { type:'presence',        │                         │
-   │      online:true }     ◄─────┤                         │
-   │                              │                         │
-   │──── { type:'message' } ─────►│── saveMessage() ──► PG  │
-   │                              │── publish('chat:general', message)
-   │                              │                         │
-   │◄── { type:'message' }  ◄─────┤────────────────────────►│
-```
-
-### Multi-node scaling
-
-Each server node subscribes to the Redis channel for every room it has live connections in. When any node publishes a message or event, Redis delivers it to all subscriber nodes, which each fan it out to their local WebSocket connections. No sticky sessions required.
-
----
-
-## WebSocket Protocol
-
-Connect to `ws://localhost:3001/ws`.
-
-All messages are JSON with a `type` discriminant.
-
-### Client → Server
-
-#### `join` — must be the first message sent
-```json
-{ "type": "join", "roomId": "general", "username": "alice" }
-```
-
-#### `message` — send a chat message
-```json
-{ "type": "message", "content": "hello world" }
-```
-- Max 4000 characters
-- Persisted to PostgreSQL immediately
-- Broadcast to room via Redis
-
-#### `typing` — user started typing
-```json
-{ "type": "typing" }
-```
-Sets a 4-second Redis TTL. Re-send while typing to keep it alive.
-
-#### `stop_typing` — user stopped typing
-```json
-{ "type": "stop_typing" }
-```
-
-#### `heartbeat` — keep presence alive
-```json
-{ "type": "heartbeat" }
-```
-Must be sent at least every 30 seconds or the user's presence entry expires. The test client sends one every 10 seconds.
-
----
-
-### Server → Client
-
-#### `welcome` — sent immediately after a successful `join`
-```json
-{
-  "type": "welcome",
-  "userId": "uuid-...",
-  "roomId": "general",
-  "history": [
-    {
-      "id": "42",
-      "userId": "uuid-...",
-      "username": "bob",
-      "content": "hey",
-      "createdAt": "2025-01-01T12:00:00.000Z"
-    }
-  ],
-  "presence": {
-    "uuid-alice": "alice",
-    "uuid-bob":   "bob"
-  }
-}
-```
-History is the 50 most recent messages, ordered oldest → newest.
-
-#### `message` — a new chat message
-```json
-{
-  "type":      "message",
-  "id":        "43",
-  "userId":    "uuid-...",
-  "username":  "alice",
-  "content":   "hello world",
-  "createdAt": "2025-01-01T12:01:00.000Z"
-}
-```
-
-#### `presence` — a user joined or left
-```json
-{ "type": "presence", "userId": "uuid-...", "username": "carol", "online": true }
-{ "type": "presence", "userId": "uuid-...", "username": "carol", "online": false }
-```
-
-#### `typing` — typing indicator update
-```json
-{ "type": "typing", "userId": "uuid-...", "username": "dave", "isTyping": true }
-{ "type": "typing", "userId": "uuid-...", "username": "dave", "isTyping": false }
-```
-
-#### `pong` — heartbeat reply
-```json
-{ "type": "pong" }
-```
-
-#### `error` — something went wrong
-```json
-{ "type": "error", "message": "username required" }
+Open `index.html` in your browser and connect or use
+```bash
+xdg-open index.html
 ```
 
 ---
 
-## REST Endpoints
+## Inviting others
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Liveness probe |
-| `GET` | `/rooms/:id/presence` | Current presence snapshot |
-| `GET` | `/rooms/:id/history?limit=50` | Message history (max 200) |
+Expose your local server with ngrok and send them the URL:
 
----
-
-## Redis Key Schema
-
-| Key | Type | TTL | Contents |
-|---|---|---|---|
-| `presence:<roomId>` | Hash | 90s (room-level) | `userId → username` |
-| `presence_exp:<roomId>` | Sorted set | 90s | `userId` scored by expiry ms |
-| `typing:<roomId>:<userId>` | String | 4s | `username` |
-| `chat:<roomId>` | Pub/Sub channel | — | JSON event payloads |
-
----
-
-## PostgreSQL Schema
-
-```sql
-rooms    (id TEXT PK, name TEXT, created_at TIMESTAMPTZ)
-users    (id TEXT PK, username TEXT, created_at, last_seen TIMESTAMPTZ)
-messages (id BIGSERIAL PK, room_id TEXT FK, user_id TEXT,
-          username TEXT, content TEXT, deleted_at TIMESTAMPTZ, created_at TIMESTAMPTZ)
+```bash
+ngrok http 3001
 ```
 
-`messages` is indexed on `(room_id, created_at DESC)` for fast history queries.
+Tell them to open `index.html` and set the server field to:
+
+```
+wss://your-ngrok-url.ngrok-free.app/ws
+```
 
 ---
 
-## File Structure
+## Protocol
+
+Every message is JSON with a `type` field.
+
+**Client → Server**
+```json
+{ "type": "join",         "roomId": "general", "username": "alice" }
+{ "type": "message",      "content": "hey"                         }
+{ "type": "typing"                                                  }
+{ "type": "stop_typing"                                             }
+{ "type": "heartbeat"                                               }
+```
+
+**Server → Client**
+```json
+{ "type": "welcome",  "userId": "...", "history": [...], "presence": {...} }
+{ "type": "message",  "username": "alice", "content": "hey", "createdAt": "..." }
+{ "type": "presence", "username": "alice", "online": true }
+{ "type": "typing",   "username": "alice", "isTyping": true }
+```
+
+---
+
+## Project structure
 
 ```
-ws-chat/
-├── server.js          # HTTP server + WebSocket upgrade, REST routes
-├── chat.js            # Per-connection handler, event dispatcher
-├── db.js              # PostgreSQL pool, schema bootstrap, query helpers
-├── redis.js           # Redis clients (pub/sub/data), presence & typing helpers
-├── index.html         # Browser test client (no build step)
-├── docker-compose.yml # PostgreSQL + Redis
-├── .env.example       # Environment variable template
+websocket-chat/
+├── server.js       
+├── chat.js            
+├── db.js           
+├── redis.js         
+├── index.html
+├── docker-compose.yml
+├── .env.example
 └── package.json
 ```
+
+---
+
+## Database schema
+
+```sql
+rooms    (id, name, created_at)
+users    (id, username, created_at, last_seen)
+messages (id, room_id → rooms, user_id, username,
+          content, deleted_at, created_at)
+```
+
+---
+
+## 🎧 Built to these playlists
+
+> *[in my own head](https://open.spotify.com/playlist/0auscJmVTHpAzPK1til3I2?si=d6a7b18205d543b8)*
+> *[on the soul search](https://open.spotify.com/playlist/5EupibT67sLlGYBYZj1qUP?si=51e057d732c4472d)*
+> *[top lane tunes](https://open.spotify.com/playlist/2NDdO4ZAQTUg8ae5LY8t5y?si=cde32e103ce644a6)*
+> *[real world actors](https://open.spotify.com/playlist/7qc583xE29T4hbWq2BJPXQ?si=a1891cf8e5dc40c5)*
+
+---
+
+## License
+
+Do whatever you want with it.
